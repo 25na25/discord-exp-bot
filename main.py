@@ -158,7 +158,6 @@ class SpecialSkillView(View):
         self.button.style = discord.ButtonStyle.gray
 
         self.finished = True
-        self.stop()
 
         await interaction.response.defer()
         
