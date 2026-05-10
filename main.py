@@ -1,16 +1,14 @@
 import os
-import asyncio
+import threading
 import pandas as pd
 import discord
 from discord.ext import commands
 from discord import app_commands
 from discord.ui import View, Select, Button
-
 from flask import Flask
-import threading
 
 # =========================
-# Flask（keep-alive用）
+# Flask（UptimeRobot用）
 # =========================
 
 app = Flask(__name__)
@@ -25,8 +23,9 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
+
 # =========================
-# Discord bot setup
+# Bot設定
 # =========================
 
 TOKEN = os.getenv("TOKEN")
@@ -36,88 +35,56 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+
 # =========================
-# CSV
+# データ読み込み
 # =========================
 
 SPECIAL_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdr67r8mLDyl_qeoKJF5qFNHV0CR969ayqHtBAaH9u-bmyIq7T9vuIy-A754_D59xo_95puCGHeo4d/pub?gid=1840905945&single=true&output=csv"
-BASE_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdr67r8mLDyl_qeoKJF5qFNHV0CR969ayqHtBAaH9u-bmyIq7T9vuIy-A754_D59xo_95puCGHeo4d/pub?gid=0&single=true&output=csv"
+
+special_df = pd.read_csv(SPECIAL_CSV_URL)
 
 SPECIAL_TABLE = {}
 SPECIAL_OPTIONS = []
+
+for _, row in special_df.iterrows():
+    name = row["特殊能力"]
+    exp = int(row["経験点"])
+    SPECIAL_TABLE[name] = exp
+
+for name in SPECIAL_TABLE.keys():
+    SPECIAL_OPTIONS.append(
+        discord.SelectOption(label=name, value=name)
+    )
+
+
+CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdr67r8mLDyl_qeoKJF5qFNHV0CR969ayqHtBAaH9u-bmyIq7T9vuIy-A754_D59xo_95puCGHeo4d/pub?gid=0&single=true&output=csv"
+
+df = pd.read_csv(CSV_URL)
 
 MEAT_TABLE = {}
 POWER_TABLE = {}
 OTHER_TABLE = {}
 
-# =========================
-# CSVロード
-# =========================
+for _, row in df.iterrows():
+    ability = int(row["能力"])
+    MEAT_TABLE[ability] = int(row["ミート"])
+    POWER_TABLE[ability] = int(row["パワー"])
+    OTHER_TABLE[ability] = int(row["その他"])
 
-def load_csv():
-
-    global SPECIAL_TABLE, SPECIAL_OPTIONS
-    global MEAT_TABLE, POWER_TABLE, OTHER_TABLE
-
-    try:
-        special_df = pd.read_csv(SPECIAL_CSV_URL)
-        df = pd.read_csv(BASE_CSV_URL)
-
-        new_special = {}
-        new_options = []
-
-        for _, row in special_df.iterrows():
-            new_special[row["特殊能力"]] = int(row["経験点"])
-
-        for name in new_special.keys():
-            new_options.append(
-                discord.SelectOption(label=name, value=name)
-            )
-
-        new_meat = {}
-        new_power = {}
-        new_other = {}
-
-        for _, row in df.iterrows():
-            a = int(row["能力"])
-            new_meat[a] = int(row["ミート"])
-            new_power[a] = int(row["パワー"])
-            new_other[a] = int(row["その他"])
-
-        SPECIAL_TABLE = new_special
-        SPECIAL_OPTIONS = new_options
-        MEAT_TABLE = new_meat
-        POWER_TABLE = new_power
-        OTHER_TABLE = new_other
-
-        print("CSV updated")
-
-    except Exception as e:
-        print("CSV load failed:", e)
 
 # =========================
-# 5分更新ループ
-# =========================
-
-async def update_loop():
-    await bot.wait_until_ready()
-
-    while not bot.is_closed():
-        load_csv()
-        await asyncio.sleep(300)
-
-# =========================
-# View
+# View（完全安全版）
 # =========================
 
 class SpecialSkillView(View):
 
-    def __init__(self, user_id, meat, power, run, defense, skill, mental):
+    def __init__(self, user_id: int, meat, power, run, defense, skill, mental):
 
         super().__init__(timeout=300)
 
         self.user_id = user_id
-        self.finished = False
+        self.message_id = None
 
         self.meat = meat
         self.power = power
@@ -127,7 +94,9 @@ class SpecialSkillView(View):
         self.mental = mental
 
         self.selected_skills = []
+        self.finished = False
 
+        # ===== プルダウン =====
         self.select = Select(
             placeholder="特殊能力を選択",
             min_values=0,
@@ -138,6 +107,7 @@ class SpecialSkillView(View):
         self.select.callback = self.select_callback
         self.add_item(self.select)
 
+        # ===== ボタン =====
         self.button = Button(
             label="計算",
             style=discord.ButtonStyle.green
@@ -146,48 +116,68 @@ class SpecialSkillView(View):
         self.button.callback = self.button_callback
         self.add_item(self.button)
 
+
+    # =========================
+    # 完全ロック（最重要）
+    # =========================
+
     async def interaction_check(self, interaction: discord.Interaction):
 
+        # 他人操作禁止
         if interaction.user.id != self.user_id:
             await interaction.response.send_message(
-                "これはあなたの操作ではありません",
+                "これはあなたの操作ではありません。",
                 ephemeral=True
             )
             return False
 
+        # 完了後ロック
         if self.finished:
             await interaction.response.send_message(
-                "この計算は終了しています",
+                "この計算はすでに完了しています。",
                 ephemeral=True
             )
             return False
 
         return True
 
+
+    # =========================
+    # 選択
+    # =========================
+
     async def select_callback(self, interaction: discord.Interaction):
         self.selected_skills = self.select.values
         await interaction.response.defer()
 
+
+    # =========================
+    # 計算
+    # =========================
+
     async def button_callback(self, interaction: discord.Interaction):
 
-        base = (
-            MEAT_TABLE.get(self.meat, 0)
-            + POWER_TABLE.get(self.power, 0)
-            + OTHER_TABLE.get(self.run, 0)
-            + OTHER_TABLE.get(self.defense, 0)
-            + OTHER_TABLE.get(self.skill, 0)
-            + OTHER_TABLE.get(self.mental, 0)
+        meat_exp = MEAT_TABLE.get(self.meat, 0)
+        power_exp = POWER_TABLE.get(self.power, 0)
+        run_exp = OTHER_TABLE.get(self.run, 0)
+        defense_exp = OTHER_TABLE.get(self.defense, 0)
+        skill_exp = OTHER_TABLE.get(self.skill, 0)
+        mental_exp = OTHER_TABLE.get(self.mental, 0)
+
+        base_total = (
+            meat_exp + power_exp + run_exp +
+            defense_exp + skill_exp + mental_exp
         )
 
-        special = 0
-        text = ""
+        special_total = 0
+        special_text = ""
 
         for s in self.selected_skills:
-            v = SPECIAL_TABLE.get(s, 0)
-            special += v
-            text += f"{s} : {v}\n"
+            val = SPECIAL_TABLE.get(s, 0)
+            special_total += val
+            special_text += f"{s} : {val}\n"
 
-        total = base + special
+        total = base_total + special_total
 
         embed = discord.Embed(
             title="野手経験点計算結果",
@@ -201,15 +191,15 @@ class SpecialSkillView(View):
         )
 
         embed.add_field(
-            name="基礎",
-            value=str(base),
+            name="基礎能力",
+            value=str(base_total),
             inline=False
         )
 
-        if text:
+        if special_text:
             embed.add_field(
                 name="特殊能力",
-                value=f"{text}特殊能力計 : {special}",
+                value=f"{special_text}特殊能力計 : {special_total}",
                 inline=False
             )
 
@@ -219,10 +209,15 @@ class SpecialSkillView(View):
             inline=False
         )
 
+        # =========================
+        # UI完全ロック
+        # =========================
+
         self.finished = True
         self.select.disabled = True
+
         self.button.disabled = True
-        self.button.label = "完了"
+        self.button.label = "計算済"
         self.button.style = discord.ButtonStyle.gray
 
         await interaction.response.edit_message(
@@ -232,19 +227,21 @@ class SpecialSkillView(View):
 
         await interaction.followup.send(embed=embed)
 
+
 # =========================
-# command
+# Slash Command
 # =========================
 
-@bot.tree.command(name="exp", description="経験点計算")
+@bot.tree.command(name="exp", description="野手経験点を計算します")
+@app_commands.describe(values="ミート パワー 走力 守備 小技 精神")
 async def exp(interaction: discord.Interaction, values: str):
 
     try:
-        m, p, r, d, s, me = map(int, values.split())
+        meat, power, run, defense, skill, mental = map(int, values.split())
 
         view = SpecialSkillView(
             interaction.user.id,
-            m, p, r, d, s, me
+            meat, power, run, defense, skill, mental
         )
 
         await interaction.response.send_message(
@@ -254,9 +251,10 @@ async def exp(interaction: discord.Interaction, values: str):
 
     except:
         await interaction.response.send_message(
-            "入力エラー",
+            "入力形式が正しくありません。",
             ephemeral=True
         )
+
 
 # =========================
 # 起動
@@ -265,9 +263,7 @@ async def exp(interaction: discord.Interaction, values: str):
 @bot.event
 async def on_ready():
     await bot.tree.sync()
-    print(f"Logged in as {bot.user}")
+    print(f"{bot.user} でログインしました")
 
-    load_csv()
-    bot.loop.create_task(update_loop())
 
 bot.run(TOKEN)
