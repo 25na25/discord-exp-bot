@@ -1,4 +1,5 @@
 import os
+import asyncio
 import pandas as pd
 import discord
 from discord.ext import commands
@@ -12,7 +13,7 @@ from discord.ui import View, Select, Button
 TOKEN = os.getenv("TOKEN")
 
 if not TOKEN:
-    raise RuntimeError("TOKEN is not set in environment variables")
+    raise RuntimeError("TOKEN is not set")
 
 # =========================
 # intents
@@ -24,54 +25,82 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # =========================
-# CSV読み込み（安全版）
+# CSV URL
 # =========================
 
 SPECIAL_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdr67r8mLDyl_qeoKJF5qFNHV0CR969ayqHtBAaH9u-bmyIq7T9vuIy-A754_D59xo_95puCGHeo4d/pub?gid=1840905945&single=true&output=csv"
 BASE_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdr67r8mLDyl_qeoKJF5qFNHV0CR969ayqHtBAaH9u-bmyIq7T9vuIy-A754_D59xo_95puCGHeo4d/pub?gid=0&single=true&output=csv"
 
-print("loading csv...")
-
-try:
-    special_df = pd.read_csv(SPECIAL_CSV_URL)
-except Exception as e:
-    print("SPECIAL CSV ERROR:", e)
-    special_df = pd.DataFrame(columns=["特殊能力", "経験点"])
-
-try:
-    df = pd.read_csv(BASE_CSV_URL)
-except Exception as e:
-    print("BASE CSV ERROR:", e)
-    df = pd.DataFrame(columns=["能力", "ミート", "パワー", "その他"])
-
 # =========================
-# テーブル構築
+# グローバルデータ（キャッシュ）
 # =========================
 
 SPECIAL_TABLE = {}
 SPECIAL_OPTIONS = []
 
-for _, row in special_df.iterrows():
-    try:
-        SPECIAL_TABLE[row["特殊能力"]] = int(row["経験点"])
-    except:
-        continue
-
-for name in SPECIAL_TABLE.keys():
-    SPECIAL_OPTIONS.append(discord.SelectOption(label=name, value=name))
-
 MEAT_TABLE = {}
 POWER_TABLE = {}
 OTHER_TABLE = {}
 
-for _, row in df.iterrows():
+# =========================
+# 初期ロード
+# =========================
+
+def load_data():
+
+    global SPECIAL_TABLE, SPECIAL_OPTIONS
+    global MEAT_TABLE, POWER_TABLE, OTHER_TABLE
+
+    print("loading csv...")
+
     try:
-        ability = int(row["能力"])
-        MEAT_TABLE[ability] = int(row["ミート"])
-        POWER_TABLE[ability] = int(row["パワー"])
-        OTHER_TABLE[ability] = int(row["その他"])
-    except:
-        continue
+        special_df = pd.read_csv(SPECIAL_CSV_URL)
+        df = pd.read_csv(BASE_CSV_URL)
+
+        new_special = {}
+        new_options = []
+
+        for _, row in special_df.iterrows():
+            new_special[row["特殊能力"]] = int(row["経験点"])
+
+        for name in new_special.keys():
+            new_options.append(
+                discord.SelectOption(label=name, value=name)
+            )
+
+        new_meat = {}
+        new_power = {}
+        new_other = {}
+
+        for _, row in df.iterrows():
+            ability = int(row["能力"])
+            new_meat[ability] = int(row["ミート"])
+            new_power[ability] = int(row["パワー"])
+            new_other[ability] = int(row["その他"])
+
+        # 成功時のみ反映（重要）
+        SPECIAL_TABLE = new_special
+        SPECIAL_OPTIONS = new_options
+        MEAT_TABLE = new_meat
+        POWER_TABLE = new_power
+        OTHER_TABLE = new_other
+
+        print("csv updated successfully")
+
+    except Exception as e:
+        print("csv update failed:", e)
+
+# =========================
+# 定期更新（5分）
+# =========================
+
+async def update_loop():
+
+    await bot.wait_until_ready()
+
+    while not bot.is_closed():
+        load_data()
+        await asyncio.sleep(300)
 
 # =========================
 # View
@@ -110,39 +139,28 @@ class SpecialSkillView(View):
         self.button.callback = self.button_callback
         self.add_item(self.button)
 
-    # =========================
-    # 他人操作完全ブロック
-    # =========================
-
+    # 他人操作防止
     async def interaction_check(self, interaction: discord.Interaction):
 
         if interaction.user.id != self.user_id:
             await interaction.response.send_message(
-                "このメニューはあなた専用です。",
+                "これはあなた専用です",
                 ephemeral=True
             )
             return False
 
         if self.finished:
             await interaction.response.send_message(
-                "この計算はすでに完了しています。",
+                "この計算は終了しています",
                 ephemeral=True
             )
             return False
 
         return True
 
-    # =========================
-    # select
-    # =========================
-
     async def select_callback(self, interaction: discord.Interaction):
         self.selected_skills = self.select.values
         await interaction.response.defer()
-
-    # =========================
-    # button
-    # =========================
 
     async def button_callback(self, interaction: discord.Interaction):
 
@@ -195,7 +213,6 @@ class SpecialSkillView(View):
             inline=False
         )
 
-        # UIロック
         self.finished = True
         self.select.disabled = True
         self.button.disabled = True
@@ -231,7 +248,7 @@ async def exp(interaction: discord.Interaction, values: str):
 
     except:
         await interaction.response.send_message(
-            "入力ミスです",
+            "入力形式エラー",
             ephemeral=True
         )
 
@@ -243,6 +260,12 @@ async def exp(interaction: discord.Interaction, values: str):
 async def on_ready():
     await bot.tree.sync()
     print(f"Logged in as {bot.user}")
+
+    # 初回ロード
+    load_data()
+
+    # 5分更新開始
+    bot.loop.create_task(update_loop())
 
 print("starting bot...")
 
