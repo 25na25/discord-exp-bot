@@ -6,18 +6,30 @@ from discord.ext import commands
 from discord import app_commands
 from discord.ui import View, Select, Button
 
+from flask import Flask
+import threading
+
 # =========================
-# TOKEN
+# Flask（keep-alive用）
+# =========================
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "alive"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+threading.Thread(target=run_web, daemon=True).start()
+
+# =========================
+# Discord bot setup
 # =========================
 
 TOKEN = os.getenv("TOKEN")
-
-if not TOKEN:
-    raise RuntimeError("TOKEN is not set")
-
-# =========================
-# intents
-# =========================
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -25,15 +37,11 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # =========================
-# CSV URL
+# CSV
 # =========================
 
 SPECIAL_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdr67r8mLDyl_qeoKJF5qFNHV0CR969ayqHtBAaH9u-bmyIq7T9vuIy-A754_D59xo_95puCGHeo4d/pub?gid=1840905945&single=true&output=csv"
 BASE_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdr67r8mLDyl_qeoKJF5qFNHV0CR969ayqHtBAaH9u-bmyIq7T9vuIy-A754_D59xo_95puCGHeo4d/pub?gid=0&single=true&output=csv"
-
-# =========================
-# グローバルデータ（キャッシュ）
-# =========================
 
 SPECIAL_TABLE = {}
 SPECIAL_OPTIONS = []
@@ -43,15 +51,13 @@ POWER_TABLE = {}
 OTHER_TABLE = {}
 
 # =========================
-# 初期ロード
+# CSVロード
 # =========================
 
-def load_data():
+def load_csv():
 
     global SPECIAL_TABLE, SPECIAL_OPTIONS
     global MEAT_TABLE, POWER_TABLE, OTHER_TABLE
-
-    print("loading csv...")
 
     try:
         special_df = pd.read_csv(SPECIAL_CSV_URL)
@@ -73,33 +79,31 @@ def load_data():
         new_other = {}
 
         for _, row in df.iterrows():
-            ability = int(row["能力"])
-            new_meat[ability] = int(row["ミート"])
-            new_power[ability] = int(row["パワー"])
-            new_other[ability] = int(row["その他"])
+            a = int(row["能力"])
+            new_meat[a] = int(row["ミート"])
+            new_power[a] = int(row["パワー"])
+            new_other[a] = int(row["その他"])
 
-        # 成功時のみ反映（重要）
         SPECIAL_TABLE = new_special
         SPECIAL_OPTIONS = new_options
         MEAT_TABLE = new_meat
         POWER_TABLE = new_power
         OTHER_TABLE = new_other
 
-        print("csv updated successfully")
+        print("CSV updated")
 
     except Exception as e:
-        print("csv update failed:", e)
+        print("CSV load failed:", e)
 
 # =========================
-# 定期更新（5分）
+# 5分更新ループ
 # =========================
 
 async def update_loop():
-
     await bot.wait_until_ready()
 
     while not bot.is_closed():
-        load_data()
+        load_csv()
         await asyncio.sleep(300)
 
 # =========================
@@ -109,6 +113,7 @@ async def update_loop():
 class SpecialSkillView(View):
 
     def __init__(self, user_id, meat, power, run, defense, skill, mental):
+
         super().__init__(timeout=300)
 
         self.user_id = user_id
@@ -129,6 +134,7 @@ class SpecialSkillView(View):
             max_values=min(len(SPECIAL_OPTIONS), 25),
             options=SPECIAL_OPTIONS
         )
+
         self.select.callback = self.select_callback
         self.add_item(self.select)
 
@@ -136,15 +142,15 @@ class SpecialSkillView(View):
             label="計算",
             style=discord.ButtonStyle.green
         )
+
         self.button.callback = self.button_callback
         self.add_item(self.button)
 
-    # 他人操作防止
     async def interaction_check(self, interaction: discord.Interaction):
 
         if interaction.user.id != self.user_id:
             await interaction.response.send_message(
-                "これはあなた専用です",
+                "これはあなたの操作ではありません",
                 ephemeral=True
             )
             return False
@@ -248,7 +254,7 @@ async def exp(interaction: discord.Interaction, values: str):
 
     except:
         await interaction.response.send_message(
-            "入力形式エラー",
+            "入力エラー",
             ephemeral=True
         )
 
@@ -261,12 +267,7 @@ async def on_ready():
     await bot.tree.sync()
     print(f"Logged in as {bot.user}")
 
-    # 初回ロード
-    load_data()
-
-    # 5分更新開始
+    load_csv()
     bot.loop.create_task(update_loop())
-
-print("starting bot...")
 
 bot.run(TOKEN)
