@@ -1,43 +1,28 @@
 import os
-import threading
 import pandas as pd
 import discord
 from discord.ext import commands
 from discord import app_commands
 from discord.ui import View, Select, Button
-from flask import Flask
 
 # =========================
-# Flask（UptimeRobot用）
-# =========================
-
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "alive"
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
-threading.Thread(target=run_web, daemon=True).start()
-
-
-# =========================
-# Bot設定
+# TOKENチェック（即死防止）
 # =========================
 
 TOKEN = os.getenv("TOKEN")
 
+if not TOKEN:
+    raise RuntimeError("TOKENが設定されていません（Renderの環境変数を確認してください）")
+
+# =========================
+# Intents
+# =========================
+
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
-
-
 # =========================
-# データ読み込み
+# 特殊能力テーブル
 # =========================
 
 SPECIAL_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdr67r8mLDyl_qeoKJF5qFNHV0CR969ayqHtBAaH9u-bmyIq7T9vuIy-A754_D59xo_95puCGHeo4d/pub?gid=1840905945&single=true&output=csv"
@@ -57,6 +42,9 @@ for name in SPECIAL_TABLE.keys():
         discord.SelectOption(label=name, value=name)
     )
 
+# =========================
+# 基礎能力テーブル
+# =========================
 
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdr67r8mLDyl_qeoKJF5qFNHV0CR969ayqHtBAaH9u-bmyIq7T9vuIy-A754_D59xo_95puCGHeo4d/pub?gid=0&single=true&output=csv"
 
@@ -72,15 +60,13 @@ for _, row in df.iterrows():
     POWER_TABLE[ability] = int(row["パワー"])
     OTHER_TABLE[ability] = int(row["その他"])
 
-
 # =========================
-# View（完全安全版）
+# View
 # =========================
 
 class SpecialSkillView(View):
 
     def __init__(self, user_id: int, meat, power, run, defense, skill, mental):
-
         super().__init__(timeout=300)
 
         self.user_id = user_id
@@ -96,42 +82,30 @@ class SpecialSkillView(View):
         self.selected_skills = []
         self.finished = False
 
-        # ===== プルダウン =====
+        # セレクト
         self.select = Select(
             placeholder="特殊能力を選択",
             min_values=0,
             max_values=min(len(SPECIAL_OPTIONS), 25),
             options=SPECIAL_OPTIONS
         )
-
         self.select.callback = self.select_callback
         self.add_item(self.select)
 
-        # ===== ボタン =====
+        # ボタン
         self.button = Button(
             label="計算",
             style=discord.ButtonStyle.green
         )
-
         self.button.callback = self.button_callback
         self.add_item(self.button)
 
-
     # =========================
-    # 完全ロック（最重要）
+    # 所有者ロック + メッセージロック
     # =========================
 
     async def interaction_check(self, interaction: discord.Interaction):
 
-        # 他人操作禁止
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message(
-                "これはあなたの操作ではありません。",
-                ephemeral=True
-            )
-            return False
-
-        # 完了後ロック
         if self.finished:
             await interaction.response.send_message(
                 "この計算はすでに完了しています。",
@@ -139,20 +113,32 @@ class SpecialSkillView(View):
             )
             return False
 
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "これはあなたの計算ではありません。",
+                ephemeral=True
+            )
+            return False
+
+        if self.message_id and interaction.message.id != self.message_id:
+            await interaction.response.send_message(
+                "無効な操作です。",
+                ephemeral=True
+            )
+            return False
+
         return True
 
-
     # =========================
-    # 選択
+    # 特殊能力選択
     # =========================
 
     async def select_callback(self, interaction: discord.Interaction):
         self.selected_skills = self.select.values
         await interaction.response.defer()
 
-
     # =========================
-    # 計算
+    # 計算処理
     # =========================
 
     async def button_callback(self, interaction: discord.Interaction):
@@ -209,13 +195,9 @@ class SpecialSkillView(View):
             inline=False
         )
 
-        # =========================
-        # UI完全ロック
-        # =========================
-
+        # UIロック
         self.finished = True
         self.select.disabled = True
-
         self.button.disabled = True
         self.button.label = "計算済"
         self.button.style = discord.ButtonStyle.gray
@@ -227,6 +209,16 @@ class SpecialSkillView(View):
 
         await interaction.followup.send(embed=embed)
 
+# =========================
+# Bot
+# =========================
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+@bot.event
+async def on_ready():
+    await bot.tree.sync()
+    print(f"{bot.user} でログインしました")
 
 # =========================
 # Slash Command
@@ -255,15 +247,8 @@ async def exp(interaction: discord.Interaction, values: str):
             ephemeral=True
         )
 
-
 # =========================
 # 起動
 # =========================
-
-@bot.event
-async def on_ready():
-    await bot.tree.sync()
-    print(f"{bot.user} でログインしました")
-
 
 bot.run(TOKEN)
