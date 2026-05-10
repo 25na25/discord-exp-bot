@@ -226,7 +226,7 @@ class SpecialSkillView(View):
                 name="特殊能力",
                 value=(
                     special_text
-                    + f"\n特殊能力計 : {special_total}"
+                    + f"特殊能力計 : {special_total}"
                 ),
                 inline=False
             )
