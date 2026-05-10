@@ -10,8 +10,9 @@ TOKEN = os.getenv("TOKEN")
 intents = discord.Intents.default()
 intents.message_content = True
 
+
 # =========================
-# 特殊能力
+# 特殊能力テーブル
 # =========================
 
 SPECIAL_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdr67r8mLDyl_qeoKJF5qFNHV0CR969ayqHtBAaH9u-bmyIq7T9vuIy-A754_D59xo_95puCGHeo4d/pub?gid=1840905945&single=true&output=csv"
@@ -22,20 +23,18 @@ SPECIAL_TABLE = {}
 SPECIAL_OPTIONS = []
 
 for _, row in special_df.iterrows():
-    skill_name = row["特殊能力"]
+    name = row["特殊能力"]
     exp = int(row["経験点"])
-    SPECIAL_TABLE[skill_name] = exp
+    SPECIAL_TABLE[name] = exp
 
-for skill_name in SPECIAL_TABLE.keys():
+for name in SPECIAL_TABLE.keys():
     SPECIAL_OPTIONS.append(
-        discord.SelectOption(
-            label=skill_name,
-            value=skill_name
-        )
+        discord.SelectOption(label=name, value=name)
     )
 
+
 # =========================
-# 基礎能力
+# 基礎能力テーブル
 # =========================
 
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdr67r8mLDyl_qeoKJF5qFNHV0CR969ayqHtBAaH9u-bmyIq7T9vuIy-A754_D59xo_95puCGHeo4d/pub?gid=0&single=true&output=csv"
@@ -52,16 +51,19 @@ for _, row in df.iterrows():
     POWER_TABLE[ability] = int(row["パワー"])
     OTHER_TABLE[ability] = int(row["その他"])
 
+
 # =========================
-# View
+# View（安全版）
 # =========================
 
 class SpecialSkillView(View):
 
-    def __init__(self, user_id, meat, power, run, defense, skill, mental):
+    def __init__(self, user_id: int, meat, power, run, defense, skill, mental):
+
         super().__init__(timeout=300)
 
         self.user_id = user_id
+        self.message_id = None
 
         self.meat = meat
         self.power = power
@@ -73,86 +75,93 @@ class SpecialSkillView(View):
         self.selected_skills = []
         self.finished = False
 
-        # Select
         self.select = Select(
             placeholder="特殊能力を選択",
             min_values=0,
             max_values=min(len(SPECIAL_OPTIONS), 25),
             options=SPECIAL_OPTIONS
         )
+
         self.select.callback = self.select_callback
         self.add_item(self.select)
 
-        # Button
         self.button = Button(
             label="計算",
             style=discord.ButtonStyle.green
         )
+
         self.button.callback = self.button_callback
         self.add_item(self.button)
 
+
     # =========================
-    # 他人操作防止
+    # 完全ロック（所有者チェック）
     # =========================
 
-    async def interaction_check(self, interaction):
+    async def interaction_check(self, interaction: discord.Interaction):
 
+        # すでに確定後
+        if self.finished:
+            await interaction.response.send_message(
+                "この計算はすでに完了しています。",
+                ephemeral=True
+            )
+            return False
+
+        # 他人操作ブロック
         if interaction.user.id != self.user_id:
             await interaction.response.send_message(
-                "これはコマンド実行者のみ操作できます。",
+                "これは他の人の計算です。",
+                ephemeral=True
+            )
+            return False
+
+        # message違い防止（乗っ取り対策）
+        if self.message_id and interaction.message.id != self.message_id:
+            await interaction.response.send_message(
+                "無効な操作です。",
                 ephemeral=True
             )
             return False
 
         return True
 
+
     # =========================
-    # 選択
+    # 特殊能力選択
     # =========================
 
-    async def select_callback(self, interaction):
-
-        if self.finished:
-            await interaction.response.send_message(
-                "この計算はすでに完了しています。",
-                ephemeral=True
-            )
-            return
+    async def select_callback(self, interaction: discord.Interaction):
 
         self.selected_skills = self.select.values
         await interaction.response.defer()
+
 
     # =========================
     # 計算
     # =========================
 
-    async def button_callback(self, interaction):
+    async def button_callback(self, interaction: discord.Interaction):
 
-        if self.finished:
-            await interaction.response.send_message(
-                "この計算はすでに完了しています。",
-                ephemeral=True
-            )
-            return
+        meat_exp = MEAT_TABLE.get(self.meat, 0)
+        power_exp = POWER_TABLE.get(self.power, 0)
+        run_exp = OTHER_TABLE.get(self.run, 0)
+        defense_exp = OTHER_TABLE.get(self.defense, 0)
+        skill_exp = OTHER_TABLE.get(self.skill, 0)
+        mental_exp = OTHER_TABLE.get(self.mental, 0)
 
-        # 基礎
         base_total = (
-            MEAT_TABLE.get(self.meat, 0)
-            + POWER_TABLE.get(self.power, 0)
-            + OTHER_TABLE.get(self.run, 0)
-            + OTHER_TABLE.get(self.defense, 0)
-            + OTHER_TABLE.get(self.skill, 0)
-            + OTHER_TABLE.get(self.mental, 0)
+            meat_exp + power_exp + run_exp +
+            defense_exp + skill_exp + mental_exp
         )
 
-        # 特殊
         special_total = 0
         special_text = ""
 
         for s in self.selected_skills:
-            v = SPECIAL_TABLE.get(s, 0)
-            special_total += v
-            special_text += f"{s} : {v}\n"
+            val = SPECIAL_TABLE.get(s, 0)
+            special_total += val
+            special_text += f"{s} : {val}\n"
 
         total = base_total + special_total
 
@@ -162,7 +171,7 @@ class SpecialSkillView(View):
         )
 
         embed.add_field(
-            name="能力値（ミパ走守小精）",
+            name="能力値",
             value=f"{self.meat}-{self.power}-{self.run}-{self.defense}-{self.skill}-{self.mental}",
             inline=False
         )
@@ -186,13 +195,8 @@ class SpecialSkillView(View):
             inline=False
         )
 
-        # =========================
-        # 完了処理（ここが重要）
-        # =========================
-
-        self.finished = True
-
         # UIロック
+        self.finished = True
         self.select.disabled = True
         self.button.disabled = True
         self.button.label = "計算済"
@@ -205,28 +209,22 @@ class SpecialSkillView(View):
 
         await interaction.followup.send(embed=embed)
 
+
 # =========================
 # Bot
 # =========================
 
-bot = commands.Bot(
-    command_prefix="!",
-    intents=intents
-)
+bot = commands.Bot(command_prefix="!", intents=intents)
+
 
 @bot.event
 async def on_ready():
     await bot.tree.sync()
     print(f"{bot.user} でログインしました")
 
-# =========================
-# コマンド
-# =========================
 
-@bot.tree.command(
-    name="exp",
-    description="野手経験点を計算します"
-)
+@bot.tree.command(name="exp", description="野手経験点を計算します")
+@app_commands.describe(values="ミート パワー 走力 守備 小技 精神")
 async def exp(interaction: discord.Interaction, values: str):
 
     try:
@@ -234,12 +232,7 @@ async def exp(interaction: discord.Interaction, values: str):
 
         view = SpecialSkillView(
             interaction.user.id,
-            meat,
-            power,
-            run,
-            defense,
-            skill,
-            mental
+            meat, power, run, defense, skill, mental
         )
 
         await interaction.response.send_message(
@@ -252,5 +245,6 @@ async def exp(interaction: discord.Interaction, values: str):
             "入力形式が正しくありません。",
             ephemeral=True
         )
+
 
 bot.run(TOKEN)
