@@ -8,95 +8,65 @@ from discord.ui import View, Select, Button
 from flask import Flask
 
 # =========================
-# Flask（Render対策）
+# Flask（Render用死活監視）
 # =========================
 
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "OK"
+    return "alive"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
-
-threading.Thread(target=run_flask).start()
-
+    app.run(host="0.0.0.0", port=port)
 
 # =========================
-# Bot設定
+# TOKEN
 # =========================
 
 TOKEN = os.getenv("TOKEN")
+
+if not TOKEN:
+    raise RuntimeError("TOKEN is not set in environment variables")
+
+# =========================
+# Discord intents
+# =========================
 
 intents = discord.Intents.default()
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-
 # =========================
-# CSV読み込み安全化
+# データ読み込み
 # =========================
-
-def safe_read(url):
-    try:
-        return pd.read_csv(url)
-    except Exception as e:
-        print("CSV load failed:", e)
-        return pd.DataFrame()
-
 
 SPECIAL_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdr67r8mLDyl_qeoKJF5qFNHV0CR969ayqHtBAaH9u-bmyIq7T9vuIy-A754_D59xo_95puCGHeo4d/pub?gid=1840905945&single=true&output=csv"
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdr67r8mLDyl_qeoKJF5qFNHV0CR969ayqHtBAaH9u-bmyIq7T9vuIy-A754_D59xo_95puCGHeo4d/pub?gid=0&single=true&output=csv"
 
+special_df = pd.read_csv(SPECIAL_CSV_URL)
+df = pd.read_csv(CSV_URL)
+
 SPECIAL_TABLE = {}
 SPECIAL_OPTIONS = []
+
+for _, row in special_df.iterrows():
+    SPECIAL_TABLE[row["特殊能力"]] = int(row["経験点"])
+
+for name in SPECIAL_TABLE.keys():
+    SPECIAL_OPTIONS.append(discord.SelectOption(label=name, value=name))
 
 MEAT_TABLE = {}
 POWER_TABLE = {}
 OTHER_TABLE = {}
 
-
-# =========================
-# データロード
-# =========================
-
-def load_data():
-
-    global SPECIAL_TABLE, SPECIAL_OPTIONS
-    global MEAT_TABLE, POWER_TABLE, OTHER_TABLE
-
-    # --- 特殊能力 ---
-    special_df = safe_read(SPECIAL_CSV_URL)
-
-    SPECIAL_TABLE = {}
-    SPECIAL_OPTIONS = []
-
-    for _, row in special_df.iterrows():
-        name = row["特殊能力"]
-        exp = int(row["経験点"])
-        SPECIAL_TABLE[name] = exp
-
-    for name in SPECIAL_TABLE.keys():
-        SPECIAL_OPTIONS.append(
-            discord.SelectOption(label=name, value=name)
-        )
-
-    # --- 基礎能力 ---
-    df = safe_read(CSV_URL)
-
-    MEAT_TABLE = {}
-    POWER_TABLE = {}
-    OTHER_TABLE = {}
-
-    for _, row in df.iterrows():
-        a = int(row["能力"])
-        MEAT_TABLE[a] = int(row["ミート"])
-        POWER_TABLE[a] = int(row["パワー"])
-        OTHER_TABLE[a] = int(row["その他"])
-
+for _, row in df.iterrows():
+    ability = int(row["能力"])
+    MEAT_TABLE[ability] = int(row["ミート"])
+    POWER_TABLE[ability] = int(row["パワー"])
+    OTHER_TABLE[ability] = int(row["その他"])
 
 # =========================
 # View
@@ -105,10 +75,12 @@ def load_data():
 class SpecialSkillView(View):
 
     def __init__(self, user_id, meat, power, run, defense, skill, mental):
-
         super().__init__(timeout=300)
 
         self.user_id = user_id
+        self.message_id = None
+        self.finished = False
+
         self.meat = meat
         self.power = power
         self.run = run
@@ -117,7 +89,6 @@ class SpecialSkillView(View):
         self.mental = mental
 
         self.selected_skills = []
-        self.finished = False
 
         self.select = Select(
             placeholder="特殊能力を選択",
@@ -125,7 +96,6 @@ class SpecialSkillView(View):
             max_values=min(len(SPECIAL_OPTIONS), 25),
             options=SPECIAL_OPTIONS
         )
-
         self.select.callback = self.select_callback
         self.add_item(self.select)
 
@@ -133,10 +103,12 @@ class SpecialSkillView(View):
             label="計算",
             style=discord.ButtonStyle.green
         )
-
         self.button.callback = self.button_callback
         self.add_item(self.button)
 
+    # =========================
+    # 所有者制御（最重要）
+    # =========================
 
     async def interaction_check(self, interaction: discord.Interaction):
 
@@ -156,24 +128,27 @@ class SpecialSkillView(View):
 
         return True
 
+    # =========================
+    # select
+    # =========================
 
     async def select_callback(self, interaction: discord.Interaction):
         self.selected_skills = self.select.values
         await interaction.response.defer()
 
+    # =========================
+    # button
+    # =========================
 
     async def button_callback(self, interaction: discord.Interaction):
 
-        meat_exp = MEAT_TABLE.get(self.meat, 0)
-        power_exp = POWER_TABLE.get(self.power, 0)
-        run_exp = OTHER_TABLE.get(self.run, 0)
-        defense_exp = OTHER_TABLE.get(self.defense, 0)
-        skill_exp = OTHER_TABLE.get(self.skill, 0)
-        mental_exp = OTHER_TABLE.get(self.mental, 0)
-
         base_total = (
-            meat_exp + power_exp + run_exp +
-            defense_exp + skill_exp + mental_exp
+            MEAT_TABLE.get(self.meat, 0)
+            + POWER_TABLE.get(self.power, 0)
+            + OTHER_TABLE.get(self.run, 0)
+            + OTHER_TABLE.get(self.defense, 0)
+            + OTHER_TABLE.get(self.skill, 0)
+            + OTHER_TABLE.get(self.mental, 0)
         )
 
         special_total = 0
@@ -216,7 +191,7 @@ class SpecialSkillView(View):
             inline=False
         )
 
-        # ロック
+        # UIロック
         self.finished = True
         self.select.disabled = True
         self.button.disabled = True
@@ -230,20 +205,8 @@ class SpecialSkillView(View):
 
         await interaction.followup.send(embed=embed)
 
-
 # =========================
-# 起動時
-# =========================
-
-@bot.event
-async def on_ready():
-    load_data()
-    await bot.tree.sync()
-    print(f"{bot.user} 起動完了")
-
-
-# =========================
-# コマンド
+# command
 # =========================
 
 @bot.tree.command(name="exp", description="野手経験点を計算します")
@@ -269,9 +232,15 @@ async def exp(interaction: discord.Interaction, values: str):
             ephemeral=True
         )
 
-
 # =========================
 # 起動
 # =========================
 
-bot.run(TOKEN)
+@bot.event
+async def on_ready():
+    await bot.tree.sync()
+    print(f"{bot.user} でログインしました")
+
+if __name__ == "__main__":
+    threading.Thread(target=run_flask).start()
+    bot.run(TOKEN)
