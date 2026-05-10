@@ -111,6 +111,20 @@ class SpecialSkillView(View):
     # プルダウン選択時
     # =========================
 
+
+    async def interaction_check(self, interaction):
+
+        if self.finished:
+
+            await interaction.response.send_message(
+                "この計算はすでに完了しています。",
+                ephemeral=True
+            )
+
+            return False
+
+        return True
+
     async def select_callback(self, interaction):
 
         if self.finished:
