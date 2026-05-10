@@ -7,18 +7,22 @@ from discord.ui import View, Select, Button
 
 from flask import Flask
 import threading
+import os
 
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "alive"
+    return "OK"
 
 def run():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
-threading.Thread(target=run).start()
+def keep_alive():
+    run()
+
+threading.Thread(target=keep_alive).start()
 
 
 TOKEN = os.getenv("TOKEN")
